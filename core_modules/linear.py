@@ -30,3 +30,43 @@ class Linear(nn.Module):
         if self.bias is not None:
             out = out + self.bias
         return out
+
+
+class Embedding(nn.Module):
+    def __init__(
+        self,
+        num_embeddings,
+        embedding_dim,
+        padding_idx=None,
+        max_norm=None,
+        norm_type=2.0,
+        scale_grad_by_freq=False,
+        sparse=False,
+        _weight=None,
+        _freeze=False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        self.num_embeddings = num_embeddings
+        self.W = nn.Parameter(
+            _weight
+            if _weight is not None
+            else torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype),
+            requires_grad=not _freeze,
+        )
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+        nn.init.uniform_(self.W)
+        if padding_idx is not None:
+            self.W[padding_idx] = 0
+
+    def forward(self, x):
+        if self.scale_grad_by_freq:
+            freq = torch.zeros(self.num_embeddings)
+            for val in x.flatten():
+                freq[val] += 1
+            self.W.register_hook(lambda grad: (1 / freq) @ grad)
+        return self.W[x]
