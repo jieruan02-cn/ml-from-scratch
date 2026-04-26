@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 
 
+# Lessons:
+# 1. torch.matmul's broadcast rule requires row vector multiplication for batched input vectors.
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
         super().__init__()
@@ -32,6 +34,16 @@ class Linear(nn.Module):
         return out
 
 
+# Lessons:
+# 1. in-place op on leaf variable that requires grad (Parameter) cause runtime error generally for two reasons:
+#   1) doing in-place op confuse torch computation graph as such node is not a leaf if assigned but parameter has
+#   to be a leaf so optimizer knows what to update; 2)leaf variables are meant to be updated by optimizer after
+#   .backward(). torch optimizer use no_grad for such update exactly.
+# 2. requires_grad_(False) and fill_(0) are only allowed under torch.no_grad() as above, but their behavior differ
+#   requires_grad_ only modify the slice view, the fill_ modifies the underlying data, so
+#   self.W[padding_idx].requires_grad_(False) doesn't work, it is a no op silently, which can be test using assert
+#   self.W[padding_idx].requires_grad is False, which will fail, because requires_grad is parameter level data, it
+#   only gets update if we call self.W.requires_grad_(False)
 class Embedding(nn.Module):
     def __init__(
         self,
@@ -48,25 +60,26 @@ class Embedding(nn.Module):
         dtype=None,
     ):
         super().__init__()
-        self.num_embeddings = num_embeddings
-        self.W = nn.Parameter(
-            _weight
-            if _weight is not None
-            else torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype),
-            requires_grad=not _freeze,
-        )
-        self.max_norm = max_norm
-        self.norm_type = norm_type
-        self.scale_grad_by_freq = scale_grad_by_freq
-        self.sparse = sparse
-        nn.init.uniform_(self.W)
+        if _weight is not None:
+            self.W = nn.Parameter(_weight, requires_grad=not _freeze)
+        else:
+            self.W = nn.Parameter(
+                torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype),
+                requires_grad=not _freeze,
+            )
+            nn.init.normal_(self.W)
+
         if padding_idx is not None:
-            self.W[padding_idx] = 0
+            with torch.no_grad():
+                self.W[padding_idx].fill_(0)
+            self.register_buffer(
+                "_padding_idx_tensor",
+                torch.tensor([padding_idx], device=self.W.device, dtype=torch.long),
+            )
+            if self.W.requires_grad:
+                self.W.register_hook(
+                    lambda grad: grad.index_fill_(0, self._padding_idx_tensor, 0)
+                )
 
     def forward(self, x):
-        if self.scale_grad_by_freq:
-            freq = torch.zeros(self.num_embeddings)
-            for val in x.flatten():
-                freq[val] += 1
-            self.W.register_hook(lambda grad: (1 / freq) @ grad)
         return self.W[x]
