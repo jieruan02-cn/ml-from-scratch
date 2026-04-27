@@ -44,6 +44,10 @@ class Linear(nn.Module):
 #   self.W[padding_idx].requires_grad_(False) doesn't work, it is a no op silently, which can be test using assert
 #   self.W[padding_idx].requires_grad is False, which will fail, because requires_grad is parameter level data, it
 #   only gets update if we call self.W.requires_grad_(False)
+# 3. use register_buffer whenever you have a tensor that is not a parameter (doesn't need gradients) but is still
+#   a part of the model's state that needs to stay on the same device as your weights. Common examples include
+#   attention masks in Transformers or the running mean and variance in BatchNorm layers.
+# 4. scale_grad_by_freq in PyTorch's context they use the last batch's stat instead of running stat.
 class Embedding(nn.Module):
     def __init__(
         self,
@@ -81,5 +85,14 @@ class Embedding(nn.Module):
                     lambda grad: grad.index_fill_(0, self._padding_idx_tensor, 0)
                 )
 
+        self.scale_grad_by_freq = scale_grad_by_freq
+
     def forward(self, x):
-        return self.W[x]
+        out = self.W[x]
+        if self.W.requires_grad and self.scale_grad_by_freq:
+            freq = torch.bincount(x.flatten(), minlength=self.W.shape[0]).to(
+                self.W.dtype
+            )
+            inverse_freq = 1 / freq.clamp(min=1)
+            out.register_hook(lambda grad: inverse_freq[x].unsqueeze(-1) * grad)
+        return out
