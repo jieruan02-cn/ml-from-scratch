@@ -86,9 +86,22 @@ class Embedding(nn.Module):
                 )
 
         self.scale_grad_by_freq = scale_grad_by_freq
+        self.max_norm = max_norm
+        self.norm_type = norm_type
 
     def forward(self, x):
+        if self.max_norm is not None:
+            with torch.no_grad():
+                unique_indices = torch.unique(x)
+                norms = torch.linalg.vector_norm(
+                    self.W[unique_indices], ord=self.norm_type, dim=-1
+                )
+                mask = norms > self.max_norm
+                self.W[unique_indices[mask]] *= (self.max_norm / norms[mask]).unsqueeze(
+                    -1
+                )
         out = self.W[x]
+
         if self.W.requires_grad and self.scale_grad_by_freq:
             freq = torch.bincount(x.flatten(), minlength=self.W.shape[0]).to(
                 self.W.dtype
