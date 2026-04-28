@@ -12,3 +12,4 @@ data/
 checkpoints/
 wandb/
 .DS_Store
+CLAUDE.md

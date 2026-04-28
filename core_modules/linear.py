@@ -48,6 +48,26 @@ class Linear(nn.Module):
 #   a part of the model's state that needs to stay on the same device as your weights. Common examples include
 #   attention masks in Transformers or the running mean and variance in BatchNorm layers.
 # 4. scale_grad_by_freq in PyTorch's context they use the last batch's stat instead of running stat.
+class EmbeddingFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(W, x):
+        return W[x]
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        W, x = inputs
+        ctx.save_for_backward(W.shape[0], x, output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        num_embeddngs, x, output = ctx.saved_tensors
+        return torch.sparse_coo_tensor(
+            indices=x * num_embeddngs,
+            values=grad_output,
+            size=(num_embeddngs, output.shape[-1]),
+        )
+
+
 class Embedding(nn.Module):
     def __init__(
         self,
@@ -88,6 +108,7 @@ class Embedding(nn.Module):
         self.scale_grad_by_freq = scale_grad_by_freq
         self.max_norm = max_norm
         self.norm_type = norm_type
+        self.sparse = sparse
 
     def forward(self, x):
         if self.max_norm is not None:
@@ -100,7 +121,10 @@ class Embedding(nn.Module):
                 self.W[unique_indices[mask]] *= (self.max_norm / norms[mask]).unsqueeze(
                     -1
                 )
-        out = self.W[x]
+        if self.sparse:
+            out = EmbeddingFunction.apply(self.W, x)
+        else:
+            out = self.W[x]
 
         if self.W.requires_grad and self.scale_grad_by_freq:
             freq = torch.bincount(x.flatten(), minlength=self.W.shape[0]).to(
