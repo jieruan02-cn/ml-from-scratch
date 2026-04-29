@@ -56,15 +56,17 @@ class EmbeddingFunction(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
         W, x = inputs
-        ctx.save_for_backward(W.shape[0], x, output)
+        ctx.num_embeddings = W.shape[0]
+        ctx.embedding_dim = W.shape[1]
+        ctx.save_for_backward(x)
 
     @staticmethod
     def backward(ctx, grad_output):
-        num_embeddngs, x, output = ctx.saved_tensors
+        (x,) = ctx.saved_tensors
         return torch.sparse_coo_tensor(
-            indices=x * num_embeddngs,
+            indices=torch.arange,
             values=grad_output,
-            size=(num_embeddngs, output.shape[-1]),
+            size=(ctx.num_embeddings, ctx.embedding_dim),
         )
 
 
