@@ -63,9 +63,20 @@ class EmbeddingFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (x,) = ctx.saved_tensors
+        unique_x, unique_x_inverse = torch.unique(x, return_inverse=True)
         return torch.sparse_coo_tensor(
-            indices=torch.arange,
-            values=grad_output,
+            indices=torch.cat(
+                (
+                    torch.repeat_interleave(unique_x, ctx.embedding_dim),
+                    torch.arange(ctx.embedding_dim).repeat(unique_x.numel()),
+                ),
+                dim=1,
+            ),
+            values=torch.index_add(
+                0,
+                unique_x_inverse.reshape(-1),
+                grad_output.reshape(-1, ctx.embedding_dim),
+            ),
             size=(ctx.num_embeddings, ctx.embedding_dim),
         )
 
