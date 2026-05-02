@@ -128,15 +128,13 @@ class Embedding(nn.Module):
             with torch.no_grad():
                 self.weight[padding_idx].fill_(0)
             if self.weight.requires_grad and not sparse:
-                self.register_buffer(
-                    "_padding_idx_tensor",
-                    torch.tensor(
-                        [padding_idx], device=self.weight.device, dtype=torch.long
-                    ),
-                )
-                self.weight.register_hook(
-                    lambda grad: grad.index_fill_(0, self._padding_idx_tensor, 0)
-                )
+
+                def _zero_pad_grad(grad):
+                    grad = grad.clone()
+                    grad[self.padding_idx] = 0
+                    return grad
+
+                self.weight.register_hook(_zero_pad_grad)
 
     def forward(self, x):
         if self.max_norm is not None:
