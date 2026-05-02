@@ -3,6 +3,14 @@ import torch
 import torch.nn as nn
 
 
+class Identity(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, x):
+        return x
+
+
 # Lessons:
 # 1. torch.matmul's broadcast rule requires row vector multiplication for batched input vectors.
 class Linear(nn.Module):
