@@ -10,7 +10,7 @@ class Linear(nn.Module):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.W = nn.Parameter(
+        self.weight = nn.Parameter(
             torch.empty(out_features, in_features, device=device, dtype=dtype)
         )
         self.bias = (
@@ -21,14 +21,14 @@ class Linear(nn.Module):
         self._init_weight()
 
     def _init_weight(self):
-        nn.init.kaiming_uniform_(self.W, a=math.sqrt(5))
+        nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         if self.bias is not None:
             bound = 1 / math.sqrt(self.in_features)
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x):
-        out = x @ self.W.T
-        # out = torch.matmul(x, self.W.T)
+        out = x @ self.weight.T
+        # out = torch.matmul(x, self.weight.T)
         if self.bias is not None:
             out = out + self.bias
         return out
@@ -41,44 +41,53 @@ class Linear(nn.Module):
 #   .backward(). torch optimizer use no_grad for such update exactly.
 # 2. requires_grad_(False) and fill_(0) are only allowed under torch.no_grad() as above, but their behavior differ
 #   requires_grad_ only modify the slice view, the fill_ modifies the underlying data, so
-#   self.W[padding_idx].requires_grad_(False) doesn't work, it is a no op silently, which can be test using assert
-#   self.W[padding_idx].requires_grad is False, which will fail, because requires_grad is parameter level data, it
-#   only gets update if we call self.W.requires_grad_(False)
+#   self.weight[padding_idx].requires_grad_(False) doesn't work, it is a no op silently, which can be test using assert
+#   self.weight[padding_idx].requires_grad is False, which will fail, because requires_grad is parameter level data, it
+#   only gets update if we call self.weight.requires_grad_(False)
 # 3. use register_buffer whenever you have a tensor that is not a parameter (doesn't need gradients) but is still
 #   a part of the model's state that needs to stay on the same device as your weights. Common examples include
 #   attention masks in Transformers or the running mean and variance in BatchNorm layers.
 # 4. scale_grad_by_freq in PyTorch's context they use the last batch's stat instead of running stat.
 class EmbeddingFunction(torch.autograd.Function):
     @staticmethod
-    def forward(W, x):
-        return W[x]
+    def forward(weight, x, padding_idx, scale_grad_by_freq):
+        return weight[x]
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        W, x = inputs
-        ctx.num_embeddings = W.shape[0]
-        ctx.embedding_dim = W.shape[1]
+        weight, x, padding_idx, scale_grad_by_freq = inputs
+        ctx.embedding_shape = weight.shape
         ctx.save_for_backward(x)
+        ctx.scale_grad_by_freq = scale_grad_by_freq
+        ctx.padding_idx = padding_idx
 
     @staticmethod
     def backward(ctx, grad_output):
         (x,) = ctx.saved_tensors
-        unique_x, unique_x_inverse = torch.unique(x, return_inverse=True)
-        return torch.sparse_coo_tensor(
-            indices=torch.cat(
-                (
-                    torch.repeat_interleave(unique_x, ctx.embedding_dim),
-                    torch.arange(ctx.embedding_dim).repeat(unique_x.numel()),
-                ),
-                dim=1,
-            ),
-            values=torch.index_add(
-                0,
-                unique_x_inverse.reshape(-1),
-                grad_output.reshape(-1, ctx.embedding_dim),
-            ),
-            size=(ctx.num_embeddings, ctx.embedding_dim),
+        unique_x, unique_x_inverse, *rest = torch.unique(
+            x, return_inverse=True, return_counts=ctx.scale_grad_by_freq
         )
+        values = torch.zeros(
+            (unique_x.numel(), ctx.embedding_shape[1]),
+            device=grad_output.device,
+            dtype=grad_output.dtype,
+        )
+        values.index_add_(
+            0,
+            unique_x_inverse.flatten(),
+            grad_output.reshape(-1, ctx.embedding_shape[1]),
+        )
+        if ctx.scale_grad_by_freq:
+            values /= rest[0].unsqueeze(-1).to(grad_output.dtype)
+        if ctx.padding_idx is not None:
+            values[unique_x == ctx.padding_idx] = 0
+        grad_weight = torch.sparse_coo_tensor(
+            indices=unique_x.unsqueeze(0),
+            values=values,
+            size=ctx.embedding_shape,
+            check_invariants=True,
+        )
+        return grad_weight, None, None, None
 
 
 class Embedding(nn.Module):
@@ -97,52 +106,59 @@ class Embedding(nn.Module):
         dtype=None,
     ):
         super().__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.padding_idx = padding_idx
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        self.sparse = sparse
+
         if _weight is not None:
-            self.W = nn.Parameter(_weight, requires_grad=not _freeze)
+            self.weight = nn.Parameter(_weight, requires_grad=not _freeze)
+            assert _weight.shape == (num_embeddings, embedding_dim)
         else:
-            self.W = nn.Parameter(
+            self.weight = nn.Parameter(
                 torch.empty(num_embeddings, embedding_dim, device=device, dtype=dtype),
                 requires_grad=not _freeze,
             )
-            nn.init.normal_(self.W)
+            nn.init.normal_(self.weight)
 
         if padding_idx is not None:
             with torch.no_grad():
-                self.W[padding_idx].fill_(0)
-            self.register_buffer(
-                "_padding_idx_tensor",
-                torch.tensor([padding_idx], device=self.W.device, dtype=torch.long),
-            )
-            if self.W.requires_grad:
-                self.W.register_hook(
+                self.weight[padding_idx].fill_(0)
+            if self.weight.requires_grad and not sparse:
+                self.register_buffer(
+                    "_padding_idx_tensor",
+                    torch.tensor(
+                        [padding_idx], device=self.weight.device, dtype=torch.long
+                    ),
+                )
+                self.weight.register_hook(
                     lambda grad: grad.index_fill_(0, self._padding_idx_tensor, 0)
                 )
-
-        self.scale_grad_by_freq = scale_grad_by_freq
-        self.max_norm = max_norm
-        self.norm_type = norm_type
-        self.sparse = sparse
 
     def forward(self, x):
         if self.max_norm is not None:
             with torch.no_grad():
                 unique_indices = torch.unique(x)
                 norms = torch.linalg.vector_norm(
-                    self.W[unique_indices], ord=self.norm_type, dim=-1
+                    self.weight[unique_indices], ord=self.norm_type, dim=-1
                 )
                 mask = norms > self.max_norm
-                self.W[unique_indices[mask]] *= (self.max_norm / norms[mask]).unsqueeze(
-                    -1
-                )
+                self.weight[unique_indices[mask]] *= (
+                    self.max_norm / norms[mask]
+                ).unsqueeze(-1)
         if self.sparse:
-            out = EmbeddingFunction.apply(self.W, x)
-        else:
-            out = self.W[x]
-
-        if self.W.requires_grad and self.scale_grad_by_freq:
-            freq = torch.bincount(x.flatten(), minlength=self.W.shape[0]).to(
-                self.W.dtype
+            out = EmbeddingFunction.apply(
+                self.weight, x, self.padding_idx, self.scale_grad_by_freq
             )
-            inverse_freq = 1 / freq.clamp(min=1)
-            out.register_hook(lambda grad: inverse_freq[x].unsqueeze(-1) * grad)
+        else:
+            out = self.weight[x]
+
+        if self.weight.requires_grad and self.scale_grad_by_freq and not self.sparse:
+            freq = torch.bincount(x.flatten(), minlength=self.num_embeddings)
+            out.register_hook(
+                lambda grad: grad / freq[x].clamp(min=1).to(grad.dtype).unsqueeze(-1)
+            )
         return out
