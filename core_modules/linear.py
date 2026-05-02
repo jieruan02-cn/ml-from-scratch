@@ -3,6 +3,14 @@ import torch
 import torch.nn as nn
 
 
+def linear(input, weight, bias=None):
+    if bias is not None and input.dim() == 2:
+        # torch.addmm fuse matrix multiplication and addition into one cuda kernel without saving the intermediate matrix
+        return torch.addmm(bias, input, weight.mT)
+    out = input @ weight.mT
+    return out if bias is None else out + bias
+
+
 class Identity(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -21,25 +29,22 @@ class Linear(nn.Module):
         self.weight = nn.Parameter(
             torch.empty(out_features, in_features, device=device, dtype=dtype)
         )
-        self.bias = (
-            nn.Parameter(torch.empty(out_features, device=device, dtype=dtype))
-            if bias
-            else None
-        )
-        self._init_weight()
+        if bias:
+            self.bias = nn.Parameter(
+                torch.empty(out_features, device=device, dtype=dtype)
+            )
+        else:
+            self.register_parameter("bias", None)
+        self.reset_parameters()
 
-    def _init_weight(self):
+    def reset_parameters(self):
         nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         if self.bias is not None:
-            bound = 1 / math.sqrt(self.in_features)
+            bound = 1 / math.sqrt(self.in_features) if self.in_features > 0 else 0
             nn.init.uniform_(self.bias, -bound, bound)
 
     def forward(self, x):
-        out = x @ self.weight.T
-        # out = torch.matmul(x, self.weight.T)
-        if self.bias is not None:
-            out = out + self.bias
-        return out
+        return linear(x, self.weight, self.bias)
 
 
 # Lessons:
@@ -194,7 +199,7 @@ class Bilinear(nn.Module):
             )
         else:
             self.register_parameter("bias", None)
-        self._init_weight()
+        self.reset_parameters()
 
     def forward(self, input1, input2):
         # # Superior einsum impl
@@ -209,8 +214,8 @@ class Bilinear(nn.Module):
             out = out + self.bias  # preferred than out += self.bias
         return out
 
-    def _init_weight(self):
-        bound = 1 / math.sqrt(self.in1_features)
+    def reset_parameters(self):
+        bound = 1 / math.sqrt(self.in1_features) if self.in1_features > 0 else 0
         nn.init.uniform_(self.weight, -bound, bound)
         if self.bias is not None:
             nn.init.uniform_(self.bias, -bound, bound)
