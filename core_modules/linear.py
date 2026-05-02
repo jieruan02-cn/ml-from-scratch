@@ -210,7 +210,7 @@ class Bilinear(nn.Module):
         return out
 
     def _init_weight(self):
-        uniform_range = 1 / math.sqrt(self.in1_features)
-        nn.init.uniform_(self.weight, -uniform_range, uniform_range)
+        bound = 1 / math.sqrt(self.in1_features)
+        nn.init.uniform_(self.weight, -bound, bound)
         if self.bias is not None:
-            nn.init.uniform_(self.bias, -uniform_range, uniform_range)
+            nn.init.uniform_(self.bias, -bound, bound)

@@ -13,3 +13,4 @@ checkpoints/
 wandb/
 .DS_Store
 CLAUDE.md
+.claude/
