@@ -11,6 +11,18 @@ def linear(input, weight, bias=None):
     return out if bias is None else out + bias
 
 
+def bilinear(input1, input2, weight, bias=None):
+    # # Regular impl
+    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
+    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
+    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
+
+    # Superior einsum impl
+    # b: batch, i: in1, j:in2, o: out
+    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
+    return out if bias is None else out + bias  # preferred than out += bias
+
+
 class Identity(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
@@ -223,17 +235,7 @@ class Bilinear(nn.Module):
         self.reset_parameters()
 
     def forward(self, input1, input2):
-        # # Superior einsum impl
-        # # b: batch, i: in1, j:in2, o: out
-        # out = torch.einsum("bi,oij,bj->bo", input1, self.weight, input2)
-
-        # Regular impl
-        # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
-        out = (input1.unsqueeze(-2).unsqueeze(-2) @ self.weight).squeeze(-2)
-        out = (out @ input2.unsqueeze(-1)).squeeze(-1)
-        if self.bias is not None:
-            out = out + self.bias  # preferred than out += self.bias
-        return out
+        return bilinear(input1, input2, self.weight, self.bias)
 
     def reset_parameters(self):
         bound = 1 / math.sqrt(self.in1_features) if self.in1_features > 0 else 0
