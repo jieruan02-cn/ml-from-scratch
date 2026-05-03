@@ -31,10 +31,30 @@ class ReLU(nn.Module):
         return relu(x, self.inplace)
 
 
+# Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
+# compute exp(-x) / (1 + exp(-x))^2, leading to overflow. using out * (1 - out) with out in [0, 1] avoids this.
+class SigmoidFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(x):
+        return 1 / (1 + torch.exp(-x))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        return grad_output * out * (1 - out)
+
+
 def sigmoid(input):
-    return 1 / (1 + torch.exp(-input))
+    return SigmoidFunction.apply(input)
 
 
 class Sigmoid(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
     def forward(self, input):
         return sigmoid(input)
