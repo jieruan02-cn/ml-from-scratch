@@ -47,42 +47,23 @@ class Linear(nn.Module):
         return linear(x, self.weight, self.bias)
 
 
-class LazyLinear(nn.Module):
+class LazyLinear(Linear):
     def __init__(self, out_features, bias=True, device=None, dtype=None):
-        super().__init__()
+        nn.Module.__init__(self)
         self.out_features = out_features
-        self.in_features = None
-        self.has_bias = bias
-        self.device = device
-        self.dtype = dtype
-        self.register_parameter("weight", None)
-        self.register_parameter("bias", None)
-
-    def reset_parameters(self):
-        if self.weight is not None:
-            nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-            if self.bias is not None:
-                bound = (
-                    1 / math.sqrt(self.in_features)
-                    if self.in_features is not None and self.in_features > 0
-                    else 0
-                )
-                nn.init.uniform_(self.bias, -bound, bound)
+        self.in_features = 0
+        self.weight = nn.UninitializedParameter(device=device, dtype=dtype)
+        if bias:
+            self.bias = nn.UninitializedParameter(device=device, dtype=dtype)
+        else:
+            self.register_parameter("bias", None)
 
     def forward(self, x):
-        if self.weight is None:
+        if isinstance(self.weight, nn.UninitializedParameter):
             self.in_features = x.shape[-1]
-            factory_kwargs = {
-                "device": x.device if self.device is None else self.device,
-                "dtype": x.dtype if self.dtype is None else self.dtype,
-            }
-            self.weight = nn.Parameter(
-                torch.empty((self.out_features, self.in_features), **factory_kwargs)
-            )
-            if self.has_bias:
-                self.bias = nn.Parameter(
-                    torch.empty(self.out_features, **factory_kwargs)
-                )
+            self.weight.materialize((self.out_features, self.in_features))
+            if self.bias is not None:
+                self.bias.materialize((self.out_features,))
             self.reset_parameters()
         return linear(x, self.weight, self.bias)
 
