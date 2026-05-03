@@ -58,3 +58,34 @@ class Sigmoid(nn.Module):
 
     def forward(self, input):
         return sigmoid(input)
+
+
+# TanhFunction is mainly for optimal efficiency for tanh, otherwise reusing sigmoid for tanh is better practice:
+# tanh(x) = 2sigmoid(2x) - 1
+class TanhFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(x):
+        # (exp(x) - exp(-x))/(exp(x) + exp(-x)) is worse numerically as any of the inf will cause issue, here inf in
+        # denominator will result 0.
+        return 2 / (1 + torch.exp(-2 * x)) - 1
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        return grad_output * (1 - out**2)
+
+
+def tanh(input):
+    return TanhFunction.apply(input)
+
+
+class Tanh(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, input):
+        return tanh(input)
