@@ -47,6 +47,46 @@ class Linear(nn.Module):
         return linear(x, self.weight, self.bias)
 
 
+class LazyLinear(nn.Module):
+    def __init__(self, out_features, bias=True, device=None, dtype=None):
+        super().__init__()
+        self.out_features = out_features
+        self.in_features = None
+        self.has_bias = bias
+        self.device = device
+        self.dtype = dtype
+        self.register_parameter("weight", None)
+        self.register_parameter("bias", None)
+
+    def reset_parameters(self):
+        if self.weight is not None:
+            nn.init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+            if self.bias is not None:
+                bound = (
+                    1 / math.sqrt(self.in_features)
+                    if self.in_features is not None and self.in_features > 0
+                    else 0
+                )
+                nn.init.uniform_(self.bias, -bound, bound)
+
+    def forward(self, x):
+        if self.weight is None:
+            self.in_features = x.shape[-1]
+            factory_kwargs = {
+                "device": x.device if self.device is None else self.device,
+                "dtype": x.dtype if self.dtype is None else self.dtype,
+            }
+            self.weight = nn.Parameter(
+                torch.empty((self.out_features, self.in_features), **factory_kwargs)
+            )
+            if self.has_bias:
+                self.bias = nn.Parameter(
+                    torch.empty(self.out_features, **factory_kwargs)
+                )
+            self.reset_parameters()
+        return linear(x, self.weight, self.bias)
+
+
 # Lessons:
 # 1. in-place op on leaf variable that requires grad (Parameter) cause runtime error generally for two reasons:
 #   1) doing in-place op confuse torch computation graph as such node is not a leaf if assigned but parameter has
