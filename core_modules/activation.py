@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import warnings
 
 
 # Lessons:
@@ -89,3 +90,59 @@ class Tanh(nn.Module):
 
     def forward(self, input):
         return tanh(input)
+
+
+class SoftmaxFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, dim=None, _stacklevel=3, dtype=None):
+        if dim is None:
+            warnings.warn(
+                "Implicit dimension choice for softmax has been deprecated. "
+                "Change the call to include dim=X as an argument.",
+                stacklevel=_stacklevel,
+            )
+            dim = 0 if input.dim() in (0, 1, 3) else 1
+
+        if dtype is not None:
+            input = input.to(dtype)
+        out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
+        return out / out.sum(dim=dim, keepdim=True)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.dim = inputs[1]
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        out.transpose(ctx.dim, -1)
+        jacobi = out.unsqueeze(-1) @ out.unsqueeze(-2)
+        return grad_output.unsqueeze(-1) * jacobi
+
+
+def softmax(input, dim=None, _stacklevel=3, dtype=None):
+    # return SoftmaxFunction.apply(input, dim, _stacklevel, dtype)
+
+    # Regular impl without pedantical customized backward for learning.
+    if dim is None:
+        warnings.warn(
+            "Implicit dimension choice for softmax has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            stacklevel=_stacklevel,
+        )
+        dim = 0 if input.dim() in (0, 1, 3) else 1
+
+    if dtype is not None:
+        input = input.to(dtype)
+    out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
+    return out / out.sum(dim=dim, keepdim=True)
+
+
+class Softmax(nn.Module):
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return softmax(input, self.dim)
